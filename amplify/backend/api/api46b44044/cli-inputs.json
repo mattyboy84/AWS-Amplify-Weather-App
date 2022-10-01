@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "paths": {
+    "/customers/{customerId}": {
+      "name": "/customers/{customerId}",
+      "lambdaFunction": "amplifytest269b2e3b6",
+      "permissions": {
+        "setting": "open"
+      }
+    },
+    "/location/{locationName}": {
+      "name": "/location/{locationName}",
+      "lambdaFunction": "amplifytest269b2e3b6",
+      "permissions": {
+        "setting": "open"
+      }
+    }
+  }
+}
