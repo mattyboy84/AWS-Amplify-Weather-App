@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  TargetEnv:
+    Type: String
+    Description: Env to deploy to
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+  AmplifyAppRepoURL:
+    Type: String
+    Description: Gitlab repository url of the amplify app # not .git
+    Default: override me
+  AmplifyAppRepoBranch:
+    Type: String
+    Description: Gitlab repository branch tha the amplify app was deployed to
+    Default: override me
+  AmplifyAppRepoToken:
+    Type: String
+    Description: Gitlab repository token of the amplify app
+    Default: override me
+  WeatherToken:
+    Type: String
+    Description: API token for the backend weather api
+    Default: override me
+  APIauthSecret:
+    Type: String
+    Description: API token for the backend weather api
+    Default: supersecret123!
+  
+Globals:
+  Function:
+    CodeUri: ./
+    Runtime: nodejs18.x
+    MemorySize: 3008
+    Timeout: 900
+    Environment:
+      Variables:
+        WEATHER_API_TOKEN: !Ref WeatherToken
+  
+Resources:
+  AmplifyFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-AmplifyFunctionRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - amplify.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: !Sub "${AWS::StackName}-amplify-role-policy"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: "amplify:*"
+                Resource: "*"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AdministratorAccess-Amplify"
+  
+  ApiIntegrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ApiIntegrationRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: !Sub "${AWS::StackName}-api-role-policy"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: "lambda:InvokeFunction"
+                Resource: "*"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  
+  lambdaFunction:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-lambdaFunction"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: !Sub "${AWS::StackName}-lambda-role-policy"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: "s3:*"
+                Resource: "*"
+              - Effect: Allow
+                Action: "lambda:InvokeFunction"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "secretsmanager:GetSecretValue"
+                Resource: !Ref authSecret
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  
+  AmplifyApp: 
+    Type: AWS::Amplify::App
+    Properties:
+      Name: !Sub "${AWS::StackName}-application"
+      Description: description
+      Repository: !Ref AmplifyAppRepoURL
+      AccessToken: !Ref AmplifyAppRepoToken
+      #OauthToken: !Ref AmplifyAppRepoToken
+      Platform:  WEB_COMPUTE
+      EnableBranchAutoDeletion: true
+      IAMServiceRole: !Ref AmplifyFunctionRole
+      EnvironmentVariables: #These are injected into the BuildSepc environment
+        - Name: env1
+          Value: env1value
+        #- Name: API_URL
+        #  Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/'
+        #- Name: API_SECRET
+        #  Value: !Ref APIauthSecret
+      #BuildSpec can optionally be amplify.yml at the root of project
+      BuildSpec: !Sub |
+        version: 1
+        frontend:
+          phases:
+            preBuild:
+              commands:
+                - npm ci
+            build:
+              commands:
+                - echo "API_URL=https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/" >> .env
+                - echo "API_SECRET=${APIauthSecret}" >> .env
+                - echo "REGION=${AWS::Region}" >> .env
+                - cat .env
+                - npm run build
+          artifacts:
+            baseDirectory: .next
+            files:
+              - '**/*'
+          cache:
+            paths:
+              - node_modules/**/*
+  
+  AmplifyAppLogGroup: #amplify would auto create this log group
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', ['/aws/amplify/', !GetAtt AmplifyApp.AppId]]
+    DeletionPolicy: Delete
+  
+  AmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Properties:
+      BranchName: !Ref AmplifyAppRepoBranch
+      Description: branch description
+      AppId: !GetAtt AmplifyApp.AppId
+      EnableAutoBuild: true
+      Stage: PRODUCTION
+  
+################# API RESOURCES #######################
+  
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-API"
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 200
+      FailOnWarnings: true
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - "*"
+  
+  apiProdAccessLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', ['/aws/api-gatewayV2/', !Sub "${AWS::StackName}-AccessLogs"]]
+  
+  Authorizer:
+    Type: 'AWS::ApiGatewayV2::Authorizer'
+    Properties:
+      Name: !Sub "${AWS::StackName}-LambdaAuthorizer"
+      ApiId: !Ref HttpApi
+      AuthorizerType: REQUEST
+      AuthorizerCredentialsArn: !GetAtt ApiIntegrationRole.Arn
+      AuthorizerUri: !Join 
+        - ''
+        - - 'arn:'
+          - !Ref 'AWS::Partition'
+          - ':apigateway:'
+          - !Ref 'AWS::Region'
+          - ':lambda:path/2015-03-31/functions/'
+          - !GetAtt authFunction.Arn
+          - /invocations
+      AuthorizerPayloadFormatVersion: 2.0
+      AuthorizerResultTtlInSeconds: 0
+      EnableSimpleResponses: true
+      #IdentitySource:
+      #  - $request.header.Authorization
+      #  - $request.querystring.token
+  
+  getWeatherIntegration:
+    Type: 'AWS::ApiGatewayV2::Integration'
+    Properties:
+      ApiId: !Ref HttpApi
+      CredentialsArn: !GetAtt ApiIntegrationRole.Arn
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Join
+        - ''
+        - - 'arn:'
+          - !Ref 'AWS::Partition'
+          - ':apigateway:'
+          - !Ref 'AWS::Region'
+          - ':lambda:path/2015-03-31/functions/'
+          - !GetAtt weatherFunction.Arn
+          - /invocations
+      PayloadFormatVersion: '2.0'
+  
+  getWeatherRoute:
+    Type: 'AWS::ApiGatewayV2::Route'
+    Properties:
+      OperationName: !Sub "${AWS::StackName}-getWeatherRoute"
+      ApiId: !Ref HttpApi
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref Authorizer
+      RouteKey: 'GET /weather'
+      Target: !Join 
+        - /
+        - - integrations
+          - !Ref getWeatherIntegration
+  
+################# LAMBDA RESOURCES #######################
+  
+  weatherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-weatherFunction"
+      Role: !GetAtt lambdaFunction.Arn
+      Handler: src/weather.getWeather
+  
+  weatherFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', ['/aws/lambda/', !Select [6, !Split [':', !GetAtt weatherFunction.Arn]]]]
+  
+  authFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-authFunction"
+      Role: !GetAtt lambdaFunction.Arn
+      Handler: src/utils/Auth.authenticate
+      Environment:
+        Variables:
+          API_SECRET_ARN: !Ref authSecret
+
+  authFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', ['/aws/lambda/', !Select [6, !Split [':', !GetAtt authFunction.Arn]]]]
+  
+################# AUTH SECRET #######################
+  
+  authSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}-authSecret"
+      Description: secret
+      SecretString: !Sub "{\"auth\":\"${APIauthSecret}\"}"
+  
+Outputs:
+  AmplifyAppId: # do not change name
+    Value: !GetAtt AmplifyApp.AppId
+  AmplifyAppBranchName: # do not change name
+    Value: !GetAtt AmplifyBranch.BranchName
+  AppName: 
+    Value: !GetAtt AmplifyApp.AppName
+  DefaultDomain:
+    Value: !GetAtt AmplifyApp.DefaultDomain
+  HttpApiUrl:
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/'

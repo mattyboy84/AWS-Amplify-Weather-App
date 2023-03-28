@@ -1,0 +1,18 @@
+image: amazon/aws-sam-cli-build-image-nodejs14.x:latest
+
+stages:
+  - update-frontend
+  
+variables:
+  BACKEND_STACK_NAME: weather-app-2-backend
+  BACKEND_STACK_REGION: eu-west-2
+
+update-frontend:
+  stage: update-frontend
+  script:
+    # get the app id & branch name then telling amplify to build from most recent commit
+    - AMPLIFY_APP_ID=$(aws cloudformation --region $BACKEND_STACK_REGION describe-stacks --stack-name $BACKEND_STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='AmplifyAppId'].OutputValue" --output text)
+    - AMPLIFY_BRANCH_NAME=$(aws cloudformation --region $BACKEND_STACK_REGION describe-stacks --stack-name $BACKEND_STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='AmplifyAppBranchName'].OutputValue" --output text)
+    ###
+    - aws amplify start-job --app-id ${AMPLIFY_APP_ID} --branch-name ${AMPLIFY_BRANCH_NAME} --job-type RELEASE
+  when: manual

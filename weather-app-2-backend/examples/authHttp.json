@@ -1,0 +1,14 @@
+{
+    "version": "2.0",
+    "type": "REQUEST",
+    "identitySource": null,
+    "routeKey": "GET /weather",
+    "rawPath": "/weather",
+    "rawQueryString": "location=manchester,uk",
+    "headers": {
+        "authorization": "Bearer supersecret123!"
+    },
+    "queryStringParameters": {
+        "location": "manchester,uk"
+    }
+}
